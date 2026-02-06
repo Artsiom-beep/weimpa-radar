@@ -4,9 +4,7 @@ from radar_py.browser.session import open_page
 from radar_py.capture.full_page import capture_full_page
 from radar_py.sliders.runner import run_slider_strategies
 from radar_py.utils.url import normalize_url
-from radar_py.utils.blocked import looks_blocked
-
-
+from radar_py.utils.blocked import looks_blocked, blocked_reason
 def cmd_site_screens(req: dict) -> dict:
     out_dir = Path(req.get("out_dir", "runs/_tmp/screenshots"))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -53,12 +51,15 @@ def cmd_site_screens(req: dict) -> dict:
         }
 
         if looks_blocked(title, body_text):
+
+            reason = blocked_reason(title, body_text)
+
             blocked_path = out_dir / "blocked.png"
-            page.screenshot(path=str(blocked_path), full_page=False)
+            page.screenshot(path=str(blocked_path), full_page=True)
             return {
                 "ok": True,
                 "files": ["blocked.png"],
-                "meta": {**meta, "blocked": True},
+                "meta": {**meta, "blocked": True, "blocked_reason": reason},
             }
         # --- end blocked detection ---
 

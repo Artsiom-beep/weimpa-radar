@@ -15,9 +15,11 @@ def run_semrush_auto_if_requested(
     if not bool(req.get("semrush_auto")):
         return
 
-    database = (req.get("semrush_db") or req.get("database") or "pl").lower()
+    database = (req.get("semrush_database") or req.get("market") or req.get("database") or req.get("semrush_db") or "us")
+    database = str(database).strip().lower()
+    if database in ("global","world","ww","all"):
+        database = "us"
     competitors = data.get("input", {}).get("competitors") or []
-    comp = competitors[0] if competitors else None
     semrush_headless = bool(req.get("semrush_headless", True))
 
     try:
@@ -25,7 +27,7 @@ def run_semrush_auto_if_requested(
             {
                 "cmd": "semrush_screens",
                 "client_domain": data["input"]["client_domain"],
-                "competitor_domain": comp,
+                "competitors": competitors[:5],
                 "database": database,
                 "out_dir": str(uploads_dir),
                 "headless": semrush_headless,

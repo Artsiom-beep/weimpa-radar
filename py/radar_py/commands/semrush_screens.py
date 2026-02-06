@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import sync_playwright
 
@@ -10,31 +10,63 @@ from radar_py.semrush.login import load_semrush_creds
 from radar_py.utils.domain import slug_domain
 
 
+def _norm_list(x) -> List[str]:
+    if not x:
+        return []
+    if isinstance(x, str):
+        return [x]
+    if isinstance(x, list):
+        return [str(i) for i in x]
+    return [str(x)]
+
+
 def cmd_semrush_screens(req: Dict[str, Any]) -> Dict[str, Any]:
-    client_domain = req.get("client_domain") or ""
-    if not client_domain:
+    client_domain_raw = (req.get("client_domain") or "").strip()
+    if not client_domain_raw:
         return {"ok": False, "error": "client_domain is required"}
 
-    competitor_domain = req.get("competitor_domain") or None
-    database = (req.get("database") or "pl").lower()
+    # database: semrush_database > database > market > default
+    database = (req.get("semrush_database") or req.get("database") or req.get("market") or "us")
+    database = str(database).strip().lower()
+    if database in ("global", "world", "ww", "all"):
+        database = "us"
 
-    out_dir = Path(req.get("out_dir") or "")
-    if not str(out_dir).strip():
+    out_dir = Path(str(req.get("out_dir") or "").strip())
+    if not str(out_dir):
         return {"ok": False, "error": "out_dir is required"}
 
-    user_data_dir = Path(req.get("user_data_dir") or (Path("runs") / "_semrush_profile"))
+    user_data_dir = Path(str(req.get("user_data_dir") or (Path("runs") / "_semrush_profile")))
     headless = bool(req.get("headless", True))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     user_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # competitors: support both competitors[] and competitor_domain
+    competitor_domain_raw: Optional[str] = req.get("competitor_domain") or None
+    competitors_raw = _norm_list(req.get("competitors"))
+    if competitor_domain_raw:
+        competitors_raw.append(str(competitor_domain_raw))
+
+    client_slug = slug_domain(client_domain_raw)
+    norm_comp: List[str] = []
+    seen = set()
+
+    for c in competitors_raw:
+        h = slug_domain(c)
+        if not h or h == client_slug or h in seen:
+            continue
+        seen.add(h)
+        norm_comp.append(h)
+    norm_comp = norm_comp[:5]
 
     email, password = load_semrush_creds(req)
 
     files: List[str] = []
     meta: Dict[str, Any] = {
         "database": database,
-        "client_domain": slug_domain(client_domain),
-        "competitor_domain": slug_domain(competitor_domain) if competitor_domain else None,
+        "client_domain": client_slug,
+        "competitors": norm_comp,
+        "competitors_count": len(norm_comp),
         "headless": headless,
         "user_data_dir": str(user_data_dir.as_posix()),
         "has_creds": bool(email and password),
@@ -57,7 +89,7 @@ def cmd_semrush_screens(req: Dict[str, Any]) -> Dict[str, Any]:
         f1, seq = capture_one_domain(
             page,
             out_dir,
-            domain=client_domain,
+            domain=client_slug,
             database=database,
             seq_start=seq,
             headless=headless,
@@ -66,11 +98,11 @@ def cmd_semrush_screens(req: Dict[str, Any]) -> Dict[str, Any]:
         )
         files.extend(f1)
 
-        if competitor_domain:
+        for comp_domain in norm_comp:
             f2, seq = capture_one_domain(
                 page,
                 out_dir,
-                domain=competitor_domain,
+                domain=comp_domain,
                 database=database,
                 seq_start=seq,
                 headless=headless,
@@ -83,5 +115,8 @@ def cmd_semrush_screens(req: Dict[str, Any]) -> Dict[str, Any]:
             context.close()
         except Exception:
             pass
+
+    if not files:
+        return {"ok": False, "error": "semrush capture produced 0 files", "files": [], "meta": meta}
 
     return {"ok": True, "files": files, "meta": meta}

@@ -1,4 +1,7 @@
 <?php
+header('Content-Type: text/html; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 
 function load_env_file($path) {
   if (!is_readable($path)) return;
@@ -92,49 +95,39 @@ function list_images_recursive_1_level($dirAbs, $dirRel) {
 $client_domain = trim($_POST['client_domain'] ?? '');
 $market = trim($_POST['market'] ?? 'Global');
 $language = trim($_POST['language'] ?? 'en');
-$mode = trim($_POST['mode'] ?? 'sales');
-$competitor_1 = trim($_POST['competitor_1'] ?? '');
-$slide_limit = intval($_POST['slide_limit'] ?? 0);
+$mode = 'sales';
 
-$semrush_auto = isset($_POST['semrush_auto']) && in_array(strtolower((string)$_POST['semrush_auto']), ['1','on','true','yes'], true);
-$semrush_db = trim($_POST['semrush_db'] ?? 'pl');
-
-if ($client_domain === '') {
-  http_response_code(400);
-  echo "client_domain is required";
-  exit;
-}
-
-$run_id = date('Y-m-d') . '__' . slug($client_domain) . '__' . $mode . '__' . $language . '__' . date('His');
-
-$base = __DIR__;
-$runs_dir = $base . DIRECTORY_SEPARATOR . 'runs';
-$run_dir  = $runs_dir . DIRECTORY_SEPARATOR . $run_id;
-$uploads_dir = $run_dir . DIRECTORY_SEPARATOR . 'uploads';
-
-ensure_dir($uploads_dir);
-
-// manual semrush images
-save_uploads_array('semrush_files', $uploads_dir, 'semrush');
-
-// optional semrush pdf
-save_upload('semrush_pdf', $uploads_dir . DIRECTORY_SEPARATOR . 'semrush.pdf');
-
-// optional blocked
-save_upload('blocked_screen', $uploads_dir . DIRECTORY_SEPARATOR . 'blocked_screen.png');
 
 $competitors = [];
-if ($competitor_1 !== '') $competitors[] = $competitor_1;
 
-// manual competitor screenshots (optional)
+// from new UI: competitors[]
+if (isset($_POST['competitors']) && is_array($_POST['competitors'])) {
+  $competitors = $_POST['competitors'];
+}
+
+// backward-compat: competitor_1..competitor_5
+for ($i = 1; $i <= 5; $i++) {
+  $k = 'competitor_' . $i;
+  if (isset($_POST[$k])) $competitors[] = $_POST[$k];
+}
+
+// normalize + uniq + limit 5
+$competitors = array_map(function($x){ return trim((string)$x); }, $competitors);
+$competitors = array_values(array_filter($competitors, function($x){ return $x !== ''; }));
+$competitors = array_values(array_unique($competitors));
+$competitors = array_slice($competitors, 0, 5);
+
+$competitor_1 = $competitors[0] ?? '';
+
+// manual competitor screenshots (optional): пока только для первого конкурента
 if ($competitor_1 !== '') {
   save_uploads_array('competitor_files', $uploads_dir, 'competitor__' . slug($competitor_1));
 }
-
 $payload = [
   'cmd' => 'run',
   'client_domain' => $client_domain,
   'market' => $market,
+  'semrush_database' => (trim($_POST['semrush_database'] ?? '') ?: $market),
   'language' => $language,
   'mode' => $mode,
   'competitors' => $competitors,
@@ -246,40 +239,121 @@ $res = json_decode($out, true);
   <style>
     body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 12px; }
     pre { white-space: pre-wrap; background:#f6f6f6; padding: 12px; border:1px solid #ddd; }
-    img { max-width: 980px; border:1px solid #ddd; }
+    .status { display:inline-block; padding:6px 10px; border-radius:8px; font-weight:700; }
+    .ok { background:#e8f5e9; border:1px solid #b7e0bb; }
+    .bad { background:#ffebee; border:1px solid #f5b7c0; }
+    .card { background:#fafafa; border:1px solid #e5e5e5; border-radius:12px; padding:12px; margin:12px 0; }
+    .warn { margin-top:10px; padding:10px; background:#fff8e1; border:1px solid #f3d59b; border-radius:10px; }
+    .kv { margin:6px 0; color:#333; }
+    .grid { display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; }
+    .shot { width: 220px; border:1px solid #e5e5e5; border-radius:12px; overflow:hidden; background:#fff; }
+    .shot .lbl { padding:8px; font-size:12px; color:#333; border-bottom:1px solid #eee; }
+    .shot img { width:100%; height:140px; object-fit:cover; display:block; }
+    details { margin:12px 0; }
+    summary { cursor:pointer; font-weight:700; }
   </style>
 </head>
 <body>
   <h1>Result</h1>
 
-  <pre><?php
-    echo htmlspecialchars("exit_code=$code\n\nstdout:\n$out\n\nstderr:\n$err");
-  ?></pre>
-
-  <?php if (is_array($res) && ($res['ok'] ?? false)): ?>
-    <?php $runDirRel = 'runs/' . $run_id; ?>
 <?php
-$zipRel = $runDirRel . '/run.zip';
+$ok = is_array($res) && ($res['ok'] ?? false) && intval($code) === 0;
+
+$runDirRel = 'runs/' . $run_id;
 $runAbs = __DIR__ . DIRECTORY_SEPARATOR . $runDirRel;
+
+$dataAbs = $runAbs . DIRECTORY_SEPARATOR . 'data.json';
+$data = null;
+if (is_readable($dataAbs)) {
+  $raw = file_get_contents($dataAbs);
+  $tmp = json_decode($raw, true);
+  if (is_array($tmp)) $data = $tmp;
+}
+
+$competitorsCount = 0;
+$semrushDb = null;
+if (is_array($data)) {
+  $cc = $data['input']['competitors'] ?? [];
+  if (is_array($cc)) $competitorsCount = count($cc);
+  $semrushDb = $data['input']['semrush_database'] ?? ($data['input']['database'] ?? null);
+}
+
+
+$ssDirRel = $runDirRel . '/screenshots';
+$ssDirAbs = __DIR__ . DIRECTORY_SEPARATOR . $ssDirRel;
+$imgs = list_images_recursive_1_level($ssDirAbs, $ssDirRel);
+
+
+$hasSemrushByFiles = false;
+if (is_array($imgs)) {
+  foreach ($imgs as $pair) {
+    $label = (string)($pair[1] ?? '');
+    if (stripos($label, 'semrush') === 0) { $hasSemrushByFiles = true; break; }
+  }
+}
+$totalImgs = is_array($imgs) ? count($imgs) : 0;
+$semrushImgs = 0; $siteImgs = 0; $competitorImgs = 0;
+
+
+if (is_array($imgs)) {
+  foreach ($imgs as $pair) {
+    $label = (string)($pair[1] ?? '');
+    if (stripos($label, 'semrush') === 0) $semrushImgs++;
+    else if (stripos($label, 'competitor') === 0) $competitorImgs++;
+    else $siteImgs++;
+  }
+}
+$blocked = null;
+if (is_array($data)) $blocked = $data['metrics']['site']['blocked'] ?? null;
+
+$hasSemrush = false;
+if (is_array($data)) {
+  $sf = $data['sources']['semrush_files'] ?? [];
+  if (is_array($sf) && count($sf) > 0) $hasSemrush = true;
+  if (!$hasSemrush && !empty($data['sources']['semrush_overview_screenshot'])) $hasSemrush = true;
+}
+
+$zipRel = $runDirRel . '/run.zip';
 $zipAbs = __DIR__ . DIRECTORY_SEPARATOR . $zipRel;
 
-if (isset($code) && intval($code) === 0) {
+if ($ok) {
   if (file_exists($zipAbs)) { @unlink($zipAbs); }
-  if (true) {
-    $parts = [];
-    foreach (['sales_note.txt','report.md','data.json','data.csv'] as $f) {
-      if (file_exists($runAbs . DIRECTORY_SEPARATOR . $f)) $parts[] = escapeshellarg($f);
-    }
-    foreach (['screenshots','uploads'] as $d) {
-      if (is_dir($runAbs . DIRECTORY_SEPARATOR . $d)) $parts[] = escapeshellarg($d);
-    }
-    if (!empty($parts)) {
-      $cmdZip = 'cd ' . escapeshellarg($runAbs) . ' && zip -r ' . escapeshellarg('run.zip') . ' ' . implode(' ', $parts);
-      @shell_exec($cmdZip);
-    }
+
+  $parts = [];
+  foreach (['sales_note.txt','report.md','data.json','data.csv'] as $f) {
+    if (file_exists($runAbs . DIRECTORY_SEPARATOR . $f)) $parts[] = escapeshellarg($f);
+  }
+  foreach (['screenshots','uploads'] as $d) {
+    if (is_dir($runAbs . DIRECTORY_SEPARATOR . $d)) $parts[] = escapeshellarg($d);
+  }
+  if (!empty($parts)) {
+    $cmdZip = 'cd ' . escapeshellarg($runAbs) . ' && zip -r ' . escapeshellarg('run.zip') . ' ' . implode(' ', $parts);
+    @shell_exec($cmdZip);
   }
 }
 ?>
+
+  <?php if ($ok): ?>
+    <div class="status ok">OK</div>
+
+    <div class="card">
+      <div class="kv">Скрины: сайт <?php echo intval($siteImgs); ?>, Semrush <?php echo intval($semrushImgs); ?>, конкуренты <?php echo intval($competitorImgs); ?>.</div>
+      <div class="kv">Market: <?php echo htmlspecialchars($market); ?>. Language: <?php echo htmlspecialchars($language); ?>.</div>
+      <div class="kv">Semrush DB: <?php echo htmlspecialchars($semrushDb ?? $market); ?>. Competitors: <?php echo intval($competitorsCount); ?>.</div>
+
+      <?php if ($blocked): ?>
+        <div class="warn">Сайт отвечает как для бота. Нужен blocked screen или ручные скрины.</div>
+      <?php endif; ?>
+
+      <?php if (!$hasSemrush): ?>
+        <div class="warn">
+          Нет Semrush-скринов.<br/>
+          Починка:<br/>
+          - Включить Semrush auto screenshots и один раз залогиниться.<br/>
+          - Или загрузить вручную 2–6 Semrush картинок.
+        </div>
+      <?php endif; ?>
+    </div>
 
     <h2>Artifacts</h2>
     <ul>
@@ -288,26 +362,49 @@ if (isset($code) && intval($code) === 0) {
       <li><a href="<?php echo $runDirRel . '/data.json'; ?>">data.json</a></li>
       <li><a href="<?php echo $runDirRel . '/data.csv'; ?>">data.csv</a></li>
     </ul>
-<?php if (isset($zipRel) && file_exists(__DIR__ . DIRECTORY_SEPARATOR . $zipRel)) { ?>
-  <p><a href="<?php echo htmlspecialchars($zipRel); ?>">Download ZIP</a></p>
-<?php } ?>
 
+    <?php if (file_exists($zipAbs)) { ?>
+      <p><a href="<?php echo htmlspecialchars($zipRel); ?>">Download ZIP</a></p>
+    <?php } ?>
 
-    <h2>Screenshots</h2>
-    <?php
-      $ssDirRel = $runDirRel . '/screenshots';
-      $ssDirAbs = __DIR__ . DIRECTORY_SEPARATOR . $ssDirRel;
+    <details>
+      <summary>Screenshots</summary>
+      <div class="grid">
+        <?php
+          if (is_array($imgs)) {
+            foreach ($imgs as $pair) {
+              $src = (string)($pair[0] ?? '');
+              $label = (string)($pair[1] ?? '');
+              $href = $src;
+              echo '<div class="shot">';
+              echo '<div class="lbl">' . htmlspecialchars($label) . '</div>';
+              echo '<a target="_blank" rel="noopener" href="' . htmlspecialchars($href) . '">';
+              echo '<img loading="lazy" src="' . htmlspecialchars($src) . '" />';
+              echo '</a>';
+              echo '</div>';
+            }
+          }
+        ?>
+      </div>
+    </details>
 
-      $imgs = list_images_recursive_1_level($ssDirAbs, $ssDirRel);
-      foreach ($imgs as $pair) {
-        $src = $pair[0];
-        $label = $pair[1];
-        echo '<div style="margin:10px 0;">';
-        echo '<div>' . htmlspecialchars($label) . '</div>';
-        echo '<img src="' . htmlspecialchars($src) . '" />';
-        echo '</div>';
-      }
-    ?>
+    <details>
+      <summary>Debug</summary>
+      <pre><?php echo htmlspecialchars("exit_code=$code\n\nstdout:\n$out\n\nstderr:\n$err"); ?></pre>
+    </details>
+
+  <?php else: ?>
+    <div class="status bad">НЕ OK</div>
+
+    <div class="card">
+      <div class="warn">Сбой запуска. Ниже отладка.</div>
+    </div>
+
+    <details open>
+      <summary>Debug</summary>
+      <pre><?php echo htmlspecialchars("exit_code=$code\n\nstdout:\n$out\n\nstderr:\n$err"); ?></pre>
+    </details>
   <?php endif; ?>
+
 </body>
 </html>
